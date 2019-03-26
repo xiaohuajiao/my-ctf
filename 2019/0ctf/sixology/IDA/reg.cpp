@@ -1,0 +1,373 @@
+#include "0ctf.hpp"
+#include <map>
+#include <vector>
+
+//--------------------------------------------------------------------------
+netnode helper;
+
+#ifndef RELEASE
+static const char *const RegNames[] =
+{
+    "r0",   "r1",   "r2",   "r3",   "r4",   "r5",   "r6",   "r7",
+    "r8",   "r9",   "r10",  "r11",  "r12",  "r13",  "r14",  "r15",
+    "r16",  "r17",  "r18",  "r19",  "r20",  "r21",  "r22",  "r23",
+    "r24",  "r25",  "r26",  "r27",  "r28",  "LR",  "FP",  "SP",
+    "P0", "P1", "P2", "P3",
+    "SA", "LC",
+    "CS", "DS"
+};
+#else
+// FIXME
+static const char *const RegNames[] =
+{
+"_______6666",
+"________666666",
+"_____________6666666666",
+"______66666666",
+"___________6666666666",
+"_____________666666666",
+"________666666666",
+"_______66666",
+"____________6666",
+"_____________66666",
+"_______666666666",
+"__________6666666666",
+"___6666666666",
+"__________6666",
+"______________66666",
+"_____66666666",
+"___________6666666",
+"________6666666",
+"_____666666",
+"__________666666",
+"______________6666666666",
+"_______6666666666",
+"______666666666",
+"________6666",
+"_____6666666666",
+"___________666666666",
+"___66666666",
+"_______666666",
+"_____________666666",
+"____666666666",
+"____6666",
+"________66666666",
+"____666666",
+"______________666666",
+"_____66666",
+"___________666666",
+"_____________6666666",
+"__________666666666",
+"_________66666666",
+"_________6666",
+};
+#endif
+
+static const bytes_t codestart[] =
+{
+    { 0, NULL }
+};
+
+//--------------------------------------------------------------------------
+// handler for some IDB events
+static ssize_t idaapi idb_notify(void *, int notification_code, va_list va)
+{
+    switch ( notification_code )
+    {
+        case idb_event::closebase:
+        case idb_event::savebase:
+            //helper.altset(-1, idpflags);
+            break;
+
+        case idb_event::op_type_changed:
+            // An operand type (offset, hex, etc...) has been set or deleted
+            {
+            }
+            break;
+    }
+    return 0;
+}
+
+//-----------------------------------------------------------------------
+//      ASMI
+//-----------------------------------------------------------------------
+static const asm_t oops_as =
+{
+    AS_COLON | AS_N2CHR | AS_1TEXT | ASH_HEXF3 | ASO_OCTF5 | ASB_BINF3
+        |AS_ONEDUP | AS_ASCIIC,
+    0,
+    "0ctf2019 Assembler",
+    0,
+    NULL,                         // no headers
+    "org",                       // org directive
+    "end",                            // end directive
+    ";;",                          // comment string
+    '"',                          // string delimiter
+    '\'',                         // char delimiter
+    "\\\"'",                      // special symbols in char and string constants
+
+    ".ascii",                     // ascii string directive
+    "db",                      // byte directive
+    "dw",                     // word directive
+    "dd",                      // dword        (4 bytes)
+    "dq",                      // qword        (8 bytes)
+    NULL,                         // oword        (16 bytes)
+    ".float",                     // float        (4 bytes)
+    ".double",                    // double (8 bytes)
+    NULL,                         // tbyte        (10/12 bytes)
+    NULL,                         // packed decimal real
+    ".ds.#s(b,w,l,d) #d, #v",     // arrays (#h,#d,#v,#s(...)
+    "%s dup ?",                  // uninited arrays
+    "=",                          // equ
+    NULL,                         // seg prefix
+    ".",                          // curent ip
+    NULL,                         // func_header
+    NULL,                         // func_footer
+    ".global",                    // public
+    NULL,                         // weak
+    ".extern",                    // extrn
+    ".comm",                      // comm
+    NULL,                         // get_type_name
+    ".align",                     // align
+    '(', ')',                     // lbrace, rbrace
+    "%",                          // mod
+    "&",                          // and
+    "|",                          // or
+    "^",                          // xor
+    "!",                          // not
+    "<<",                         // shl
+    ">>",                         // shr
+    "sizeof %s",                         // sizeof
+};
+
+
+static const asm_t *const asms[] = { &oops_as, NULL };
+
+//-----------------------------------------------------------------------
+// The short and long names of the supported processors
+#define FAMILY "Argonaut RISC Core:"
+
+static const char *const shnames[] =
+{
+    "0ops",
+    NULL
+};
+
+static const char *const lnames[] =
+{
+    "0CTF2019 ( Processor )",
+    NULL
+};
+
+//--------------------------------------------------------------------------
+// Opcodes of "return" instructions. This information will be used in 2 ways:
+//                      - if an instruction has the "return" opcode, its autogenerated label
+//                              will be "locret" rather than "loc".
+//                      - IDA will use the first "return" opcode to create empty subroutines.
+/*
+static const uchar retcode[] = {};
+
+static const bytes_t retcodes[] =
+{
+    { 0, NULL }                    // NULL terminated array
+};
+*/
+
+//----------------------------------------------------------------------
+// The kernel event notifications
+// Here you may take desired actions upon some kernel events
+static ssize_t idaapi notify(void *, int msgid, va_list va)
+{
+    int code = 0;
+    switch ( msgid )
+    {
+        case processor_t::ev_init:
+        {
+            helper.create("$ 0ctf");
+            inf.set_be(false);               // Set little-endian mode of the IDA kernel
+            hook_to_notification_point(HT_IDB, idb_notify);
+            break;
+        }
+
+        case processor_t::ev_term:
+        {
+            unhook_from_notification_point(HT_IDB, idb_notify);
+            break;
+        }
+
+        case processor_t::ev_newfile:
+            break;
+
+        case processor_t::ev_oldfile:
+            // idpflags = (ushort)helper.altval(-1);
+            break;
+
+        case processor_t::ev_creating_segm:
+            break;
+
+        case processor_t::ev_out_mnem:
+            {
+                outctx_t *ctx = va_arg(va, outctx_t *);
+                out_mnem(*ctx);
+                return 1;
+            }
+
+        case processor_t::ev_is_basic_block_end:
+            {
+                const insn_t *insn = va_arg(va, insn_t *);
+                return oops_is_basic_block_end(*insn) ? 1 : -1;
+            }
+        // HINT: ret
+        case processor_t::ev_is_ret_insn:
+            {
+                const insn_t *insn = va_arg(va, insn_t *);
+                return (insn->itype == MEMEDA_ret)? 1: -1;
+            }
+
+            // +++ TYPE CALLBACKS
+        case processor_t::ev_decorate_name:
+            {
+                qstring *outbuf  = va_arg(va, qstring *);
+                const char *name = va_arg(va, const char *);
+                bool mangle      = va_argi(va, bool);
+                cm_t cc          = va_argi(va, cm_t);
+                tinfo_t *type    = va_arg(va, tinfo_t *);
+                return gen_decorate_name(outbuf, name, mangle, cc, type) ? 1 : 0;
+            }
+
+        case processor_t::ev_max_ptr_size:
+            return 4;
+
+        case processor_t::ev_get_default_enum_size: // get default enum size
+            // args:  cm_t cm
+            // returns: sizeof(enum)
+            {
+                return inf.cc.size_e;
+            }
+
+        case processor_t::ev_calc_arglocs:
+            {
+                return code;
+            }
+        /*
+        case processor_t::ev_is_call_insn:
+            // Is the instruction a "call"?
+            // ea_t ea  - instruction address
+            // returns: 1-unknown, 0-no, 2-yes
+            {
+                const insn_t *insn = va_arg(va, insn_t *);
+                code = is_call_insn(*insn) ? 1 : -1;
+                return code;
+            }
+        */
+
+        case processor_t::ev_out_header:
+            {
+                return 1;
+            }
+
+        case processor_t::ev_out_footer:
+            {
+                return 1;
+            }
+
+        case processor_t::ev_out_segstart:
+            {
+                return 1;
+            }
+
+        case processor_t::ev_ana_insn:
+            {
+                insn_t *out = va_arg(va, insn_t *);
+                return ana(out);
+            }
+
+        case processor_t::ev_emu_insn:
+            {
+                const insn_t *insn = va_arg(va, const insn_t *);
+                return emu(*insn) ? 1 : -1;
+            }
+
+        case processor_t::ev_out_insn:
+            {
+                outctx_t *ctx = va_arg(va, outctx_t *);
+                out_insn(*ctx);
+                return 1;
+            }
+
+        case processor_t::ev_out_operand:
+            {
+                outctx_t *ctx = va_arg(va, outctx_t *);
+                const op_t *op = va_arg(va, const op_t *);
+                return out_opnd(*ctx, *op) ? 1 : -1;
+            }
+
+        case processor_t::ev_create_func_frame:
+            {
+                func_t *pfn = va_arg(va, func_t *);
+                create_func_frame(pfn);
+                return 1;
+            }
+
+        case processor_t::ev_get_frame_retsize:
+            {
+                int *frsize = va_arg(va, int *);
+                const func_t *pfn = va_arg(va, const func_t *);
+                *frsize = oops_get_frame_retsize(pfn);
+                return 1;
+            }
+
+        default:
+            break;
+    }
+    return code;
+}
+
+//-----------------------------------------------------------------------
+//                      Processor Definition
+//-----------------------------------------------------------------------
+processor_t LPH =
+{
+    IDP_INTERFACE_VERSION,  // version
+    0x8000 + 2019,               // id
+    // flag
+    PR_USE32              // 32-bit processor
+        | PR_NO_SEGMOVE
+        | PR_DEFSEG32           // create 32-bit segments by default
+        | PRN_HEX               // Values are hexadecimal by default
+        | PR_TYPEINFO           // Support the type system notifications
+        | PR_RNAMESOK,          // register names can be reused for location names
+    // flag2
+    0,           // the module has processor-specific configuration options
+    8,                      // 8 bits in a byte for code segments
+    8,                      // 8 bits in a byte for other segments
+
+    shnames,                      // array of short processor names
+    // the short names are used to specify the processor
+    // with the -p command line switch)
+    lnames,                       // array of long processor names
+    // the long names are used to build the processor type
+    // selection menu
+
+    asms,                         // array of target assemblers
+
+    notify,                       // the kernel event notification callback
+
+    RegNames,                     // Register names
+    qnumber(RegNames),            // Number of registers
+
+    rVcs,                         // first
+    rVds,                         // last
+    0,                            // size of a segment register
+    rVcs, rVds,
+
+    codestart,          // code start sequences
+    0,
+
+    0, /*FIXME*/MEMEDA_last,
+    Instructions,                 // instruc
+    0,                            // size of tbyte
+    {0, 4, 8, 16},                          // real width
+    /*FIXME*/MEMEDA_ret,                            // Icode of a return instruction
+    NULL,                         // Micro virtual machine description
+};
